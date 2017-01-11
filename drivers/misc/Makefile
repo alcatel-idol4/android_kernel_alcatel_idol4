@@ -74,9 +74,12 @@ endif
 #end [FEATURE]-Add-end by TCTSH.GTGUO, 03/25/2015, defect-1863591
 obj-$(CONFIG_USB_EXT_TYPE_C_PERICOM)	+= type-c-pericom.o
 obj-$(CONFIG_USB_EXT_TYPE_C_TI)		+= type-c-ti.o
+
 obj-$(CONFIG_UID_CPUTIME) 	+= uid_cputime.o
 #[FEATURE]-Add-BEGIN by shitao.qiu,2015/11/6, task 864026
 ifdef CONFIG_TCT_8X76_IDOL4S_VDF
 obj-$(CONFIG_TCT_SYNAP)         += vfsSpi/
 endif
 #[FEATURE]-Add-END by shitao.qiu,2015/11/6
+
+obj-$(CONFIG_UID_SYS_STATS) += uid_sys_stats.o
