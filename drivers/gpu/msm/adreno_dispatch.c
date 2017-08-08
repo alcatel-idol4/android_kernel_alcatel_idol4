@@ -24,6 +24,7 @@
 #include "adreno_ringbuffer.h"
 #include "adreno_trace.h"
 #include "kgsl_sharedmem.h"
+#include "kgsl_htc.h"
 
 #define CMDQUEUE_NEXT(_i, _s) (((_i) + 1) % (_s))
 
@@ -348,6 +349,7 @@ static inline void _pop_cmdbatch(struct adreno_context *drawctxt)
 static struct kgsl_cmdbatch *_expire_markers(struct adreno_context *drawctxt)
 {
 	struct kgsl_cmdbatch *cmdbatch;
+	bool pending = false;
 
 	if (drawctxt->cmdqueue_head == drawctxt->cmdqueue_tail)
 		return NULL;
@@ -366,7 +368,17 @@ static struct kgsl_cmdbatch *_expire_markers(struct adreno_context *drawctxt)
 	}
 
 	if (cmdbatch->flags & KGSL_CMDBATCH_SYNC) {
-		if (!kgsl_cmdbatch_events_pending(cmdbatch)) {
+		/*
+		 * We may have cmdbatch timer running, which also uses same
+		 * lock, take a lock with software interrupt disabled (bh) to
+		 * avoid spin lock recursion.
+		 */
+		spin_lock_bh(&cmdbatch->lock);
+		if (!list_empty(&cmdbatch->synclist))
+			pending = true;
+		spin_unlock_bh(&cmdbatch->lock);
+
+		if (!pending) {
 			_pop_cmdbatch(drawctxt);
 			kgsl_cmdbatch_destroy(cmdbatch);
 			return _expire_markers(drawctxt);
@@ -405,8 +417,15 @@ static struct kgsl_cmdbatch *_get_cmdbatch(struct adreno_context *drawctxt)
 			(!test_bit(CMDBATCH_FLAG_SKIP, &cmdbatch->priv)))
 		pending = true;
 
-	if (kgsl_cmdbatch_events_pending(cmdbatch))
+	/*
+	 * We may have cmdbatch timer running, which also uses same lock,
+	 * take a lock with software interrupt disabled (bh) to avoid
+	 * spin lock recursion.
+	 */
+	spin_lock_bh(&cmdbatch->lock);
+	if (!list_empty(&cmdbatch->synclist))
 		pending = true;
+	spin_unlock_bh(&cmdbatch->lock);
 
 	/*
 	 * If changes are pending and the canary timer hasn't been
@@ -2138,8 +2157,10 @@ static int dispatcher_do_fault(struct kgsl_device *device)
 	int ret, i;
 	int fault;
 	int halt;
+	int keepfault, fault_pid = 0;
 
 	fault = atomic_xchg(&dispatcher->fault, 0);
+	keepfault = fault;
 	if (fault == 0)
 		return 0;
 	/*
@@ -2215,6 +2236,7 @@ static int dispatcher_do_fault(struct kgsl_device *device)
 
 	if (dispatch_q && (dispatch_q->tail != dispatch_q->head)) {
 		cmdbatch = dispatch_q->cmd_q[dispatch_q->head];
+		fault_pid = cmdbatch->context->proc_priv->pid;
 		trace_adreno_cmdbatch_fault(cmdbatch, fault);
 	}
 
@@ -2261,6 +2283,8 @@ static int dispatcher_do_fault(struct kgsl_device *device)
 	}
 
 	atomic_add(halt, &adreno_dev->halt);
+
+	adreno_fault_panic(device, fault_pid, keepfault);
 
 	return 1;
 }

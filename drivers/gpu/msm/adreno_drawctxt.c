@@ -96,13 +96,21 @@ void adreno_drawctxt_dump(struct kgsl_device *device,
 			goto stats;
 		}
 
-		if (kgsl_cmdbatch_events_pending(cmdbatch)) {
+		/*
+		 * We may have cmdbatch timer running, which also uses same
+		 * lock, take a lock with software interrupt disabled (bh)
+		 * to avoid spin lock recursion.
+		 */
+		spin_lock_bh(&cmdbatch->lock);
+
+		if (!list_empty(&cmdbatch->synclist)) {
 			dev_err(device->dev,
 				"  context[%d] (ts=%d) Active sync points:\n",
 				context->id, cmdbatch->timestamp);
 
 			kgsl_dump_syncpoints(device, cmdbatch);
 		}
+		spin_unlock_bh(&cmdbatch->lock);
 	}
 
 stats:
