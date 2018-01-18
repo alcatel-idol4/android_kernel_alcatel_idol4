@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -640,7 +640,6 @@ int ipa_nat_dma_cmd(struct ipa_ioc_nat_dma_cmd *dma)
 			goto bail;
 		}
 	}
-
 	size = sizeof(struct ipa_desc) * NUM_OF_DESC;
 	desc = kzalloc(size, GFP_KERNEL);
 	if (desc == NULL) {
