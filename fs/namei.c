@@ -3460,7 +3460,7 @@ extern atomic_t em_remount;
 int vfs_unlink2(struct vfsmount *mnt, struct inode *dir, struct dentry *dentry)
 {
 	int error = may_delete(mnt, dir, dentry, 0);
-	struct super_block *sb = dentry->d_sb;
+	// struct super_block *sb = dentry->d_sb;
 
 	if (error)
 		return error;
