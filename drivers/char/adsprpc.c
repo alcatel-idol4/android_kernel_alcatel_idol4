@@ -771,7 +771,6 @@ static int get_args(uint32_t kernel, struct smq_invoke_ctx *ctx)
 	/* calculate len requreed for copying */
 	for (oix = 0; oix < inbufs + outbufs; ++oix) {
 		int i = ctx->overps[oix]->raix;
-		uintptr_t mstart, mend;
 		size_t len = lpra[i].buf.len;
 
 		if (!len)

@@ -20,7 +20,6 @@
 #include <linux/scatterlist.h>
 #include <soc/qcom/scm.h>
 #include <soc/qcom/secure_buffer.h>
-#include <linux/msm_kgsl.h>
 
 #include "kgsl.h"
 #include "kgsl_sharedmem.h"
@@ -262,14 +261,6 @@ static ssize_t kgsl_drv_full_cache_threshold_show(struct device *dev,
 			kgsl_driver.full_cache_threshold);
 }
 
-static ssize_t kgsl_alloc_show(struct device *dev,
-					struct device_attribute *attr,
-					char *buf)
-{
-	return snprintf(buf, PAGE_SIZE, "%d\n",
-			kgsl_get_alloc_size(true));
-}
-
 static DEVICE_ATTR(vmalloc, 0444, kgsl_drv_memstat_show, NULL);
 static DEVICE_ATTR(vmalloc_max, 0444, kgsl_drv_memstat_show, NULL);
 static DEVICE_ATTR(page_alloc, 0444, kgsl_drv_memstat_show, NULL);
@@ -283,7 +274,6 @@ static DEVICE_ATTR(mapped_max, 0444, kgsl_drv_memstat_show, NULL);
 static DEVICE_ATTR(full_cache_threshold, 0644,
 		kgsl_drv_full_cache_threshold_show,
 		kgsl_drv_full_cache_threshold_store);
-static DEVICE_ATTR(kgsl_alloc, 0444, kgsl_alloc_show, NULL);
 
 static const struct device_attribute *drv_attr_list[] = {
 	&dev_attr_vmalloc,
@@ -297,7 +287,6 @@ static const struct device_attribute *drv_attr_list[] = {
 	&dev_attr_mapped,
 	&dev_attr_mapped_max,
 	&dev_attr_full_cache_threshold,
-	&dev_attr_kgsl_alloc,
 	NULL
 };
 
@@ -370,8 +359,6 @@ static int kgsl_page_alloc_vmfault(struct kgsl_memdesc *memdesc,
 			get_page(page);
 			vmf->page = page;
 
-			memdesc->mapsize += PAGE_SIZE;
-
 			return 0;
 		}
 
@@ -410,7 +397,6 @@ static void kgsl_page_alloc_free(struct kgsl_memdesc *memdesc)
 {
 	unsigned int i = 0;
 	struct scatterlist *sg;
-	struct kgsl_process_private *priv = memdesc->private;
 
 	kgsl_page_alloc_unmap_kernel(memdesc);
 	/* we certainly do not expect the hostptr to still be mapped */
@@ -457,9 +443,6 @@ static void kgsl_page_alloc_free(struct kgsl_memdesc *memdesc)
 
 		}
 	}
-
-	if (priv)
-		kgsl_process_sub_stats(priv, KGSL_MEM_ENTRY_PAGE_ALLOC, memdesc->size);
 }
 
 /*
@@ -538,8 +521,6 @@ static int kgsl_contiguous_vmfault(struct kgsl_memdesc *memdesc,
 		return VM_FAULT_OOM;
 	else if (ret == -EFAULT)
 		return VM_FAULT_SIGBUS;
-
-	memdesc->mapsize += PAGE_SIZE;
 
 	return VM_FAULT_NOPAGE;
 }
@@ -935,17 +916,11 @@ kgsl_sharedmem_page_alloc_user(struct kgsl_memdesc *memdesc,
 			    struct kgsl_pagetable *pagetable,
 			    uint64_t size)
 {
-	int ret = 0;
-	struct kgsl_process_private *priv = memdesc->private;
-
 	size = PAGE_ALIGN(size);
 	if (size == 0)
 		return -EINVAL;
 
-	ret = _kgsl_sharedmem_page_alloc(memdesc, pagetable, size);
-	if (!ret && priv)
-		kgsl_process_add_stats(priv, KGSL_MEM_ENTRY_PAGE_ALLOC, size);
-	return ret;
+	return _kgsl_sharedmem_page_alloc(memdesc, pagetable, size);
 }
 EXPORT_SYMBOL(kgsl_sharedmem_page_alloc_user);
 

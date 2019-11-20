@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2008-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -40,7 +40,6 @@
 #include "kgsl_trace.h"
 #include "kgsl_sync.h"
 #include "kgsl_compat.h"
-#include "kgsl_htc.h"
 
 #undef MODULE_PARAM_PREFIX
 #define MODULE_PARAM_PREFIX "kgsl."
@@ -455,7 +454,6 @@ kgsl_mem_entry_attach_process(struct kgsl_mem_entry *entry,
 
 	entry->id = id;
 	entry->priv = process;
-	entry->memdesc.private = process;
 
 	spin_lock(&process->mem_lock);
 	ret = kgsl_mem_entry_track_gpuaddr(process, entry);
@@ -623,7 +621,6 @@ out:
 	if (ret) {
 		write_lock(&device->context_lock);
 		idr_remove(&dev_priv->device->context_idr, id);
-		kgsl_dump_contextpid_locked(&dev_priv->device->context_idr);
 		write_unlock(&device->context_lock);
 	}
 
@@ -2240,23 +2237,21 @@ static int kgsl_setup_dmabuf_useraddr(struct kgsl_device *device,
 		if (fd != 0)
 			dmabuf = dma_buf_get(fd - 1);
 	}
+	up_read(&current->mm->mmap_sem);
 
-	if (IS_ERR_OR_NULL(dmabuf)) {
-		up_read(&current->mm->mmap_sem);
-		return dmabuf ? PTR_ERR(dmabuf) : -ENODEV;
-	}
+	if (dmabuf == NULL)
+		return -ENODEV;
 
 	ret = kgsl_setup_dma_buf(device, pagetable, entry, dmabuf);
 	if (ret) {
 		dma_buf_put(dmabuf);
-		up_read(&current->mm->mmap_sem);
 		return ret;
 	}
 
 	/* Setup the user addr/cache mode for cache operations */
 	entry->memdesc.useraddr = hostptr;
 	_setup_cache_mode(entry, vma);
-	up_read(&current->mm->mmap_sem);
+
 	return 0;
 }
 #else
@@ -2293,7 +2288,7 @@ static long _gpuobj_map_useraddr(struct kgsl_device *device,
 		struct kgsl_mem_entry *entry,
 		struct kgsl_gpuobj_import *param)
 {
-	struct kgsl_gpuobj_import_useraddr useraddr = {0};
+	struct kgsl_gpuobj_import_useraddr useraddr;
 	int ret;
 
 	param->flags &= KGSL_MEMFLAGS_GPUREADONLY
@@ -2534,8 +2529,6 @@ static int kgsl_setup_dma_buf(struct kgsl_device *device,
 	meta->dmabuf = dmabuf;
 	meta->attach = attach;
 
-	attach->priv = entry;
-
 	entry->priv_data = meta;
 	entry->memdesc.pagetable = pagetable;
 	entry->memdesc.size = 0;
@@ -2585,45 +2578,6 @@ out:
 	}
 
 	return ret;
-}
-#endif
-
-#ifdef CONFIG_DMA_SHARED_BUFFER
-void kgsl_get_egl_counts(struct kgsl_mem_entry *entry,
-		int *egl_surface_count, int *egl_image_count)
-{
-	struct kgsl_dma_buf_meta *meta = entry->priv_data;
-	struct dma_buf *dmabuf = meta->dmabuf;
-	struct dma_buf_attachment *mem_entry_buf_attachment = meta->attach;
-	struct device *buf_attachment_dev = mem_entry_buf_attachment->dev;
-	struct dma_buf_attachment *attachment = NULL;
-
-	mutex_lock(&dmabuf->lock);
-	list_for_each_entry(attachment, &dmabuf->attachments, node) {
-		struct kgsl_mem_entry *scan_mem_entry = NULL;
-
-		if (attachment->dev != buf_attachment_dev)
-			continue;
-
-		scan_mem_entry = attachment->priv;
-		if (!scan_mem_entry)
-			continue;
-
-		switch (kgsl_memdesc_get_memtype(&scan_mem_entry->memdesc)) {
-		case KGSL_MEMTYPE_EGL_SURFACE:
-			(*egl_surface_count)++;
-			break;
-		case KGSL_MEMTYPE_EGL_IMAGE:
-			(*egl_image_count)++;
-			break;
-		}
-	}
-	mutex_unlock(&dmabuf->lock);
-}
-#else
-void kgsl_get_egl_counts(struct kgsl_mem_entry *entry,
-		int *egl_surface_count, int *egl_image_count)
-{
 }
 #endif
 
@@ -2987,7 +2941,7 @@ long kgsl_ioctl_gpuobj_sync(struct kgsl_device_private *dev_priv,
 	long ret = 0;
 	bool full_flush = false;
 	uint64_t size = 0;
-	int i;
+	int i, count = 0;
 	void __user *ptr;
 
 	if (param->count == 0 || param->count > 128)
@@ -2999,8 +2953,8 @@ long kgsl_ioctl_gpuobj_sync(struct kgsl_device_private *dev_priv,
 
 	entries = kzalloc(param->count * sizeof(*entries), GFP_KERNEL);
 	if (entries == NULL) {
-		kfree(objs);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto out;
 	}
 
 	ptr = to_user_ptr(param->objs);
@@ -3017,32 +2971,36 @@ long kgsl_ioctl_gpuobj_sync(struct kgsl_device_private *dev_priv,
 		if (entries[i] == NULL)
 			continue;
 
+		count++;
+
 		if (!(objs[i].op & KGSL_GPUMEM_CACHE_RANGE))
 			size += entries[i]->memdesc.size;
 		else if (objs[i].offset < entries[i]->memdesc.size)
 			size += (entries[i]->memdesc.size - objs[i].offset);
 
 		full_flush = check_full_flush(size, objs[i].op);
-		if (full_flush) {
-			trace_kgsl_mem_sync_full_cache(i, size);
-			flush_cache_all();
-			goto out;
-		}
+		if (full_flush)
+			break;
 
 		ptr += sizeof(*objs);
 	}
 
-	for (i = 0; !ret && i < param->count; i++)
-		if (entries[i])
-			ret = _kgsl_gpumem_sync_cache(entries[i],
-					objs[i].offset, objs[i].length,
-					objs[i].op);
+	if (full_flush) {
+		trace_kgsl_mem_sync_full_cache(count, size);
+		flush_cache_all();
+	} else {
+		for (i = 0; !ret && i < param->count; i++)
+			if (entries[i])
+				ret = _kgsl_gpumem_sync_cache(entries[i],
+						objs[i].offset, objs[i].length,
+						objs[i].op);
+	}
 
-out:
 	for (i = 0; i < param->count; i++)
 		if (entries[i])
 			kgsl_mem_entry_put(entries[i]);
 
+out:
 	kfree(entries);
 	kfree(objs);
 
@@ -3082,7 +3040,6 @@ static struct kgsl_mem_entry *gpumem_alloc_entry(
 	struct kgsl_process_private *private = dev_priv->process_priv;
 	struct kgsl_mem_entry *entry;
 	unsigned int align;
-	struct kgsl_memdesc *memdesc = NULL;
 
 	flags &= KGSL_MEMFLAGS_GPUREADONLY
 		| KGSL_CACHEMODE_MASK
@@ -3133,7 +3090,6 @@ static struct kgsl_mem_entry *gpumem_alloc_entry(
 	flags = kgsl_filter_cachemode(flags);
 
 	entry = kgsl_mem_entry_create();
-	memdesc = &entry->memdesc;
 	if (entry == NULL)
 		return ERR_PTR(-ENOMEM);
 
@@ -3143,7 +3099,6 @@ static struct kgsl_mem_entry *gpumem_alloc_entry(
 	if (flags & KGSL_MEMFLAGS_SECURE)
 		entry->memdesc.priv |= KGSL_MEMDESC_SECURE;
 
-	memdesc->private = private;
 	ret = kgsl_allocate_user(dev_priv->device, &entry->memdesc,
 				private->pagetable, size, mmapsize, flags);
 	if (ret != 0)
@@ -4277,9 +4232,6 @@ int kgsl_device_platform_probe(struct kgsl_device *device)
 	/* Initialize common sysfs entries */
 	kgsl_pwrctrl_init_sysfs(device);
 
-	/* Initialize htc feature */
-	kgsl_device_htc_init(device);
-
 	dev_info(device->dev, "Initialized %s: mmu=%s\n", device->name,
 		kgsl_mmu_enabled() ? "on" : "off");
 
@@ -4425,8 +4377,6 @@ static int __init kgsl_core_init(void)
 		goto err;
 
 	kgsl_memfree_init();
-
-	kgsl_driver_htc_init(&kgsl_driver.priv);
 
 	return 0;
 
