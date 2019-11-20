@@ -115,8 +115,14 @@ void mdss_check_dsi_ctrl_status(struct work_struct *work, uint32_t interval)
 		else
 			goto status_dead;
 	}
-
-
+/* [FEATURE]-Add-BEGIN by TCTNB.CY, task-1395489, 2016/01/11, enable error flag detect*/
+#ifdef CONFIG_ERR_FLAG_DETECT
+	if(atomic_read(&ctrl_pdata->err_flag_ready)){
+		pr_err("ERR_FLAG RESET \n");
+		goto status_dead;
+	}
+#endif
+/* [FEATURE]-Mod-END by TCTNB.CY, 2016/01/11*/
 	/*
 	 * TODO: Because mdss_dsi_cmd_mdp_busy has made sure DMA to
 	 * be idle in mdss_dsi_cmdlist_commit, it is not necessary
@@ -125,8 +131,11 @@ void mdss_check_dsi_ctrl_status(struct work_struct *work, uint32_t interval)
 	 * overlay operations. Need refine this lock for command mode
 	 */
 
+	mutex_lock(&ctrl_pdata->mutex);
+	mutex_lock(&ctl->offlock);
 	if (mipi->mode == DSI_CMD_MODE)
 		mutex_lock(&mdp5_data->ov_lock);
+
 	mutex_lock(&ctl->offlock);
 
 	if (mdss_panel_is_power_off(pstatus_data->mfd->panel_power_state) ||
@@ -134,6 +143,8 @@ void mdss_check_dsi_ctrl_status(struct work_struct *work, uint32_t interval)
 		mutex_unlock(&ctl->offlock);
 		if (mipi->mode == DSI_CMD_MODE)
 			mutex_unlock(&mdp5_data->ov_lock);
+		mutex_unlock(&ctl->offlock);
+		mutex_unlock(&ctrl_pdata->mutex);
 		pr_err("%s: DSI turning off, avoiding panel status check\n",
 							__func__);
 		return;
@@ -159,8 +170,11 @@ void mdss_check_dsi_ctrl_status(struct work_struct *work, uint32_t interval)
 	mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_OFF);
 
 	mutex_unlock(&ctl->offlock);
+
 	if (mipi->mode == DSI_CMD_MODE)
 		mutex_unlock(&mdp5_data->ov_lock);
+	mutex_unlock(&ctl->offlock);
+	mutex_unlock(&ctrl_pdata->mutex);
 
 	if ((pstatus_data->mfd->panel_power_state == MDSS_PANEL_POWER_ON)) {
 		if (ret > 0)

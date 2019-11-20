@@ -1097,28 +1097,25 @@ static void device_release_contexts(struct kgsl_device_private *dev_priv)
 	struct kgsl_device *device = dev_priv->device;
 	struct kgsl_context *context;
 	int next = 0;
-	int result = 0;
 
 	while (1) {
 		read_lock(&device->context_lock);
 		context = idr_get_next(&device->context_idr, &next);
+		read_unlock(&device->context_lock);
 
-		if (context == NULL) {
-			read_unlock(&device->context_lock);
+		if (context == NULL)
 			break;
-		} else if (context->dev_priv == dev_priv) {
+
+		if (context->dev_priv == dev_priv) {
 			/*
 			 * Hold a reference to the context in case somebody
 			 * tries to put it while we are detaching
 			 */
-			result = _kgsl_context_get(context);
-		}
-		read_unlock(&device->context_lock);
 
-		if (result) {
-			kgsl_context_detach(context);
-			kgsl_context_put(context);
-			result = 0;
+			if (_kgsl_context_get(context)) {
+				kgsl_context_detach(context);
+				kgsl_context_put(context);
+			}
 		}
 
 		next = next + 1;
@@ -1647,7 +1644,7 @@ long kgsl_ioctl_submit_commands(struct kgsl_device_private *dev_priv,
 		param->flags |= KGSL_CMDBATCH_MARKER;
 
 	/* Make sure that we don't have too many syncpoints */
-	if (param->numsyncs > KGSL_MAX_NUMIBS)
+	if (param->numsyncs > KGSL_MAX_SYNCPOINTS)
 		return -EINVAL;
 
 	context = kgsl_context_get_owner(dev_priv, param->context_id);
@@ -1716,7 +1713,7 @@ long kgsl_ioctl_gpu_command(struct kgsl_device_private *dev_priv,
 	/* Make sure that the memobj and syncpoint count isn't too big */
 	if (param->numcmds > KGSL_MAX_NUMIBS ||
 		param->numobjs > KGSL_MAX_NUMIBS ||
-		param->numsyncs > KGSL_MAX_NUMIBS)
+		param->numsyncs > KGSL_MAX_SYNCPOINTS)
 		return -EINVAL;
 
 	context = kgsl_context_get_owner(dev_priv, param->context_id);

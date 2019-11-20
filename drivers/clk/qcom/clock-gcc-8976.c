@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -772,7 +772,7 @@ static struct rcg_clk camss_gp1_clk_src = {
 };
 
 static struct clk_freq_tbl ftbl_jpeg0_clk_src[] = {
-	F( 133330000,          gpll0,    6,    0,     0),
+	F( 133333333,          gpll0,    6,    0,     0),
 	F( 200000000,          gpll0,    4,    0,     0),
 	F( 266666667,          gpll0,    3,    0,     0),
 	F( 300000000,      gpll4_out,    4,    0,     0),
@@ -1124,12 +1124,12 @@ static struct rcg_clk byte1_clk_src = {
 		CLK_INIT(byte1_clk_src.c),
 	},
 };
-
+/* [PLATFORM]-Mod-BEGIN by TCTNB.CY, FR-717274, 2015/10/19,removed for not need change mipi freq, change to default*/
 static struct clk_freq_tbl ftbl_esc0_clk_src[] = {
 	F(  19200000,             xo,    1,    0,     0),
 	F_END
 };
-
+/* [PLATFORM]-Mod-END by TCTNB.CY,  2015/10/19*/
 static struct rcg_clk esc0_clk_src = {
 	.cmd_rcgr_reg = ESC0_CMD_RCGR,
 	.set_rate = set_rate_hid,
@@ -1143,12 +1143,12 @@ static struct rcg_clk esc0_clk_src = {
 		CLK_INIT(esc0_clk_src.c),
 	},
 };
-
+/* [PLATFORM]-Mod-BEGIN by TCTNB.CY, FR-717274, 2015/10/19,removed for not need change mipi freq, change to default*/
 static struct clk_freq_tbl ftbl_esc1_clk_src[] = {
 	F(  19200000,             xo,    1,    0,     0),
 	F_END
 };
-
+/* [PLATFORM]-Mod-END by TCTNB.CY,  2015/10/19*/
 static struct rcg_clk esc1_clk_src = {
 	.cmd_rcgr_reg = ESC1_CMD_RCGR,
 	.set_rate = set_rate_hid,
@@ -1504,7 +1504,7 @@ static struct rcg_clk usb_fs_system_clk_src = {
 static struct clk_freq_tbl ftbl_usb_hs_system_clk_src[] = {
 	F(  57140000,          gpll0,   14,    0,     0),
 	F( 100000000,          gpll0,    8,    0,     0),
-	F( 133330000,          gpll0,    6,    0,     0),
+	F( 133333333,          gpll0,    6,    0,     0),
 	F( 177780000,          gpll0,  4.5,    0,     0),
 	F_END
 };
