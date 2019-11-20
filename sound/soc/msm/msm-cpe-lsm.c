@@ -617,7 +617,7 @@ static int msm_cpe_lab_thread(void *data)
 	}
 
 	rc = dma_data->dai_channel_ctl(dma_data, rtd->cpu_dai,
-				       MSM_DAI_SLIM_ENABLE);
+				       true);
 	if (rc) {
 		dev_err(rtd->dev,
 			"%s: open data failed %d\n", __func__, rc);

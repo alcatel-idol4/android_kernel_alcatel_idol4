@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -549,7 +549,8 @@ static long ipa_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			retval = -EFAULT;
 			break;
 		}
-		if (ipa_del_hdr((struct ipa_ioc_del_hdr *)param)) {
+		if (ipa_del_hdr_by_user((struct ipa_ioc_del_hdr *)param,
+			true)) {
 			retval = -EFAULT;
 			break;
 		}
@@ -1230,8 +1231,8 @@ static long ipa_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			retval = -EFAULT;
 			break;
 		}
-		if (ipa_del_hdr_proc_ctx(
-			(struct ipa_ioc_del_hdr_proc_ctx *)param)) {
+		if (ipa_del_hdr_proc_ctx_by_user(
+			(struct ipa_ioc_del_hdr_proc_ctx *)param, true)) {
 			retval = -EFAULT;
 			break;
 		}
@@ -1484,7 +1485,7 @@ static void ipa_free_buffer(void *user1, int user2)
 	kfree(user1);
 }
 
-static int ipa_q6_pipe_delay(bool zip_pipes)
+int ipa_q6_pipe_delay(bool zip_pipes)
 {
 	u32 reg_val = 0;
 	int client_idx;
@@ -1522,6 +1523,7 @@ int ipa_q6_monitor_holb_mitigation(bool enable)
 	int ep_idx;
 	int client_idx;
 
+	ipa_inc_client_enable_clks();
 	for (client_idx = 0; client_idx < IPA_CLIENT_MAX; client_idx++) {
 		if (IPA_CLIENT_IS_Q6_NON_ZIP_CONS(client_idx)) {
 			ep_idx = ipa_get_ep_mapping(client_idx);
@@ -1533,6 +1535,7 @@ int ipa_q6_monitor_holb_mitigation(bool enable)
 			ipa_uc_monitor_holb(client_idx, enable);
 		}
 	}
+	ipa_dec_client_disable_clks();
 
 	return 0;
 }
@@ -1623,7 +1626,7 @@ static int ipa_q6_clean_q6_tables(void)
 	u32 max_cmds = ipa_get_max_flt_rt_cmds(ipa_ctx->ipa_num_pipes);
 
 	mem.base = dma_alloc_coherent(ipa_ctx->pdev, 4, &mem.phys_base,
-		GFP_KERNEL);
+		GFP_ATOMIC);
 	if (!mem.base) {
 		IPAERR("failed to alloc DMA buff of size 4\n");
 		return -ENOMEM;
@@ -1867,14 +1870,14 @@ int ipa_q6_pre_shutdown_cleanup(void)
 		BUG();
 
 	ipa_inc_client_enable_clks();
+
 	/*
-	 * pipe delay and holb discard for ZIP pipes are handled
-	 * in post shutdown callback.
-	 */
-	if (ipa_q6_pipe_delay(false)) {
-		IPAERR("Failed to delay Q6 pipes\n");
-		BUG();
-	}
+	 * Do not delay Q6 pipes here. This may result in IPA reading a
+	 * DMA_TASK with lock bit set and then Q6 pipe delay is set. In this
+	 * situation IPA will be remain locked as the DMA_TASK with unlock
+	 * bit will not be read by IPA as pipe delay is enabled. IPA uC will
+	 * wait for pipe to be empty before issuing a BAM pipe reset.
+	*/
 
 	if (ipa_q6_monitor_holb_mitigation(false)) {
 		IPAERR("Failed to disable HOLB monitroing on Q6 pipes\n");
@@ -1913,13 +1916,13 @@ int ipa_q6_post_shutdown_cleanup(void)
 	int res;
 
 	/*
-	 * pipe delay and holb discard for ZIP pipes are handled in
-	 * post shutdown.
-	 */
-	if (ipa_q6_pipe_delay(true)) {
-		IPAERR("Failed to delay Q6 ZIP pipes\n");
-		BUG();
-	}
+	 * Do not delay Q6 pipes here. This may result in IPA reading a
+	 * DMA_TASK with lock bit set and then Q6 pipe delay is set. In this
+	 * situation IPA will be remain locked as the DMA_TASK with unlock
+	 * bit will not be read by IPA as pipe delay is enabled. IPA uC will
+	 * wait for pipe to be empty before issuing a BAM pipe reset.
+	*/
+
 	if (ipa_q6_avoid_holb(true)) {
 		IPAERR("Failed to set HOLB on Q6 ZIP pipes\n");
 		BUG();
@@ -2510,7 +2513,7 @@ fail_schedule_delayed_work:
 	if (ipa_ctx->dflt_v4_rt_rule_hdl)
 		__ipa_del_rt_rule(ipa_ctx->dflt_v4_rt_rule_hdl);
 	if (ipa_ctx->excp_hdr_hdl)
-		__ipa_del_hdr(ipa_ctx->excp_hdr_hdl);
+		__ipa_del_hdr(ipa_ctx->excp_hdr_hdl, false);
 	ipa_teardown_sys_pipe(ipa_ctx->clnt_hdl_cmd);
 fail_cmd:
 	return result;
@@ -2522,7 +2525,7 @@ static void ipa_teardown_apps_pipes(void)
 	ipa_teardown_sys_pipe(ipa_ctx->clnt_hdl_data_in);
 	__ipa_del_rt_rule(ipa_ctx->dflt_v6_rt_rule_hdl);
 	__ipa_del_rt_rule(ipa_ctx->dflt_v4_rt_rule_hdl);
-	__ipa_del_hdr(ipa_ctx->excp_hdr_hdl);
+	__ipa_del_hdr(ipa_ctx->excp_hdr_hdl, false);
 	ipa_teardown_sys_pipe(ipa_ctx->clnt_hdl_cmd);
 }
 
@@ -3009,17 +3012,11 @@ void ipa_dec_client_disable_clks(void)
 * Return codes:
 * None
 */
-/* Qcom patch merged-BEGIN by TCTSH.fanjianjun, PR 1772878. fix IPA_WS wrongly blocks system suspend. */
 void ipa_inc_acquire_wakelock(enum ipa_wakelock_ref_client ref_client)
 {
 	unsigned long flags;
 
-	if (ref_client >= IPA_WAKELOCK_REF_CLIENT_MAX)
-		return;
 	spin_lock_irqsave(&ipa_ctx->wakelock_ref_cnt.spinlock, flags);
-	if (ipa_ctx->wakelock_ref_cnt.cnt & (1 << ref_client))
-		IPAERR("client enum %d mask already set. ref cnt = %d\n",
-		ref_client, ipa_ctx->wakelock_ref_cnt.cnt);
 	ipa_ctx->wakelock_ref_cnt.cnt |= (1 << ref_client);
 	if (ipa_ctx->wakelock_ref_cnt.cnt)
 		__pm_stay_awake(&ipa_ctx->w_lock);
@@ -3027,7 +3024,6 @@ void ipa_inc_acquire_wakelock(enum ipa_wakelock_ref_client ref_client)
 		ipa_ctx->wakelock_ref_cnt.cnt, ref_client);
 	spin_unlock_irqrestore(&ipa_ctx->wakelock_ref_cnt.spinlock, flags);
 }
-/* Qcom patch merged-END by TCTSH.fanjianjun, PR 1772878. fix IPA_WS wrongly blocks system suspend. */
 
 /**
  * ipa_dec_release_wakelock() - Decrease active clients counter
@@ -3037,13 +3033,10 @@ void ipa_inc_acquire_wakelock(enum ipa_wakelock_ref_client ref_client)
  * Return codes:
  * None
  */
-/* Qcom patch merged-BEGIN by TCTSH.fanjianjun, PR 1772878. fix IPA_WS wrongly blocks system suspend. */
 void ipa_dec_release_wakelock(enum ipa_wakelock_ref_client ref_client)
 {
 	unsigned long flags;
 
-	if (ref_client >= IPA_WAKELOCK_REF_CLIENT_MAX)
-		return;
 	spin_lock_irqsave(&ipa_ctx->wakelock_ref_cnt.spinlock, flags);
 	ipa_ctx->wakelock_ref_cnt.cnt &= ~(1 << ref_client);
 	IPADBG("active wakelock ref cnt = %d client enum %d\n",
@@ -3052,7 +3045,6 @@ void ipa_dec_release_wakelock(enum ipa_wakelock_ref_client ref_client)
 		__pm_relax(&ipa_ctx->w_lock);
 	spin_unlock_irqrestore(&ipa_ctx->wakelock_ref_cnt.spinlock, flags);
 }
-/* Qcom patch merged-END by TCTSH.fanjianjun, PR 1772878. fix IPA_WS wrongly blocks system suspend. */
 
 static int ipa_setup_bam_cfg(const struct ipa_plat_drv_res *res)
 {
