@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -100,7 +100,7 @@ void mdss_dsi_ctrl_init(struct device *ctrl_dev,
 	if (ctrl->mdss_util->register_irq(ctrl->dsi_hw))
 		pr_err("%s: mdss_register_irq failed.\n", __func__);
 
-	pr_debug("%s: ndx=%d base=%pK\n", __func__, ctrl->ndx, ctrl->ctrl_base);
+	pr_debug("%s: ndx=%d base=%p\n", __func__, ctrl->ndx, ctrl->ctrl_base);
 
 	init_completion(&ctrl->dma_comp);
 	init_completion(&ctrl->mdp_comp);
@@ -425,10 +425,6 @@ void mdss_dsi_host_init(struct mdss_panel_data *pdata)
 	/* turn esc, byte, dsi, pclk, sclk, hclk on */
 	MIPI_OUTP((ctrl_pdata->ctrl_base) + 0x11c,
 					0x23f); /* DSI_CLK_CTRL */
-
-	/* Reset DSI_LANE_CTRL */
-	if (!ctrl_pdata->mmss_clamp)
-		MIPI_OUTP((ctrl_pdata->ctrl_base) + 0x00ac, 0x0);
 
 	dsi_ctrl |= BIT(0);	/* enable dsi */
 	MIPI_OUTP((ctrl_pdata->ctrl_base) + 0x0004, dsi_ctrl);
@@ -1994,8 +1990,8 @@ static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 		if (status) {
 			pr_warn("dma tx done but irq not triggered\n");
 			reg_val &= DSI_INTR_MASK_ALL;
-			/* clear CMD DMA and BTA_DONE isr only */
-			reg_val |= (DSI_INTR_CMD_DMA_DONE | DSI_INTR_BTA_DONE);
+			/* clear CMD DMA isr only */
+			reg_val |= DSI_INTR_CMD_DMA_DONE;
 			MIPI_OUTP(ctrl->ctrl_base + 0x0110, reg_val);
 			mdss_dsi_disable_irq_nosync(ctrl, DSI_MDP_TERM);
 			complete(&ctrl->dma_comp);
@@ -2347,49 +2343,6 @@ int mdss_dsi_cmdlist_rx(struct mdss_dsi_ctrl_pdata *ctrl,
 	return len;
 }
 
-static inline bool mdss_dsi_delay_cmd(struct mdss_dsi_ctrl_pdata *ctrl,
-	bool from_mdp)
-{
-	unsigned long flags;
-	bool mdp_busy = false;
-	bool need_wait = false;
-
-	if (!ctrl->mdp_callback)
-		goto exit;
-
-	/* delay only for split dsi, cmd mode and burst mode enabled cases */
-	if (!mdss_dsi_is_hw_config_split(ctrl->shared_data) ||
-		!(ctrl->panel_mode == DSI_CMD_MODE) ||
-		!ctrl->burst_mode_enabled)
-		goto exit;
-
-	/* delay only if cmd is not from mdp and panel has been initialized */
-	if (from_mdp || !(ctrl->ctrl_state & CTRL_STATE_PANEL_INIT))
-		goto exit;
-
-	/* if broadcast enabled, apply delay only if this is the ctrl trigger */
-	if (mdss_dsi_sync_wait_enable(ctrl) &&
-		!mdss_dsi_sync_wait_trigger(ctrl))
-		goto exit;
-
-	spin_lock_irqsave(&ctrl->mdp_lock, flags);
-	if (ctrl->mdp_busy == true)
-		mdp_busy = true;
-	spin_unlock_irqrestore(&ctrl->mdp_lock, flags);
-
-	/*
-	 * apply delay only if:
-	 *  mdp_busy bool is set - kickoff is being scheduled by sw
-	 *  MDP_BUSY bit  is not set - transfer is not on-going in hw yet
-	 */
-	if (mdp_busy && !(MIPI_INP(ctrl->ctrl_base + 0x008) & BIT(2)))
-		need_wait = true;
-
-exit:
-	MDSS_XLOG(need_wait, from_mdp, mdp_busy);
-	return need_wait;
-}
-
 int mdss_dsi_cmdlist_commit(struct mdss_dsi_ctrl_pdata *ctrl, int from_mdp)
 {
 	struct dcs_cmd_req *req;
@@ -2426,7 +2379,8 @@ int mdss_dsi_cmdlist_commit(struct mdss_dsi_ctrl_pdata *ctrl, int from_mdp)
 	if (req && (req->flags & CMD_REQ_HS_MODE))
 		hs_req = true;
 
-	if ((!ctrl->burst_mode_enabled) || from_mdp) {
+	if (!ctrl->burst_mode_enabled ||
+		(from_mdp && ctrl->shared_data->cmd_clk_ln_recovery_en)) {
 		/* make sure dsi_cmd_mdp is idle */
 		rc = mdss_dsi_cmd_mdp_busy(ctrl);
 		if (rc) {
@@ -2490,17 +2444,6 @@ int mdss_dsi_cmdlist_commit(struct mdss_dsi_ctrl_pdata *ctrl, int from_mdp)
 	}
 
 	mdss_dsi_clk_ctrl(ctrl, DSI_ALL_CLKS, 1);
-
-	/*
-	 * In ping pong split cases, check if we need to apply a
-	 * delay for any commands that are not coming from
-	 * mdp path
-	 */
-	mutex_lock(&ctrl->mutex);
-	if (mdss_dsi_delay_cmd(ctrl, from_mdp))
-		ctrl->mdp_callback->fxn(ctrl->mdp_callback->data,
-			MDP_INTF_CALLBACK_DSI_WAIT);
-	mutex_unlock(&ctrl->mutex);
 
 	if (req->flags & CMD_REQ_HS_MODE)
 		mdss_dsi_set_tx_power_mode(0, &ctrl->panel_data);
@@ -2784,13 +2727,6 @@ void mdss_dsi_fifo_status(struct mdss_dsi_ctrl_pdata *ctrl)
 			pr_err("%s: ctrl ndx=%d status=%x\n", __func__,
 					ctrl->ndx, status);
 
-		/*
-		 * if DSI FIFO overflow is masked,
-		 * do not report overflow error
-		 */
-		if (MIPI_INP(base + 0x10c) & 0xf0000)
-			status = status & 0xaaaaffff;
-
 		if (status & 0x44440000) {/* DLNx_HS_FIFO_OVERFLOW */
 			dsi_send_events(ctrl, DSI_EV_DLNx_FIFO_OVERFLOW, 0);
 			/* Ignore FIFO EMPTY when overflow happens */
@@ -2877,11 +2813,6 @@ irqreturn_t mdss_dsi_isr(int irq, void *ptr)
 
 	pr_debug("%s: ndx=%d isr=%x\n", __func__, ctrl->ndx, isr);
 
-	if (isr & DSI_INTR_ERROR) {
-		MDSS_XLOG(ctrl->ndx, ctrl->mdp_busy, isr, 0x97);
-		mdss_dsi_error(ctrl);
-	}
-
 	if (isr & DSI_INTR_BTA_DONE) {
 		spin_lock(&ctrl->mdp_lock);
 		mdss_dsi_disable_irq_nosync(ctrl, DSI_BTA_TERM);
@@ -2903,6 +2834,11 @@ irqreturn_t mdss_dsi_isr(int irq, void *ptr)
 			mdss_dsi_set_reg(ctrl, 0x0c, 0x44440000, 0x44440000);
 		}
 		spin_unlock(&ctrl->mdp_lock);
+	}
+
+	if (isr & DSI_INTR_ERROR) {
+		MDSS_XLOG(ctrl->ndx, ctrl->mdp_busy, isr, 0x97);
+		mdss_dsi_error(ctrl);
 	}
 
 	if (isr & DSI_INTR_VIDEO_DONE) {

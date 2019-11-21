@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -700,7 +700,6 @@ struct buf_data {
 	char *string_buf; /* cmd buf as string, 3 bytes per number */
 	int sblen; /* string buffer length */
 	int sync_flag;
-	struct mutex dbg_mutex; /* mutex to synchronize read/write/flush */
 };
 
 struct mdss_dsi_debugfs_info {
@@ -736,7 +735,7 @@ static ssize_t mdss_dsi_cmd_state_read(struct file *file, char __user *buf,
 	if (blen < 0)
 		return 0;
 
-	if (copy_to_user(buf, buffer, min(count, (size_t)blen+1)))
+	if (copy_to_user(buf, buffer, blen))
 		return -EFAULT;
 
 	*ppos += blen;
@@ -749,21 +748,14 @@ static ssize_t mdss_dsi_cmd_state_write(struct file *file,
 	int *link_state = file->private_data;
 	char *input;
 
-	if (!count) {
-		pr_err("%s: Zero bytes to be written\n", __func__);
-		return -EINVAL;
-	}
-
 	input = kmalloc(count, GFP_KERNEL);
 	if (!input) {
 		pr_err("%s: Failed to allocate memory\n", __func__);
 		return -ENOMEM;
 	}
 
-	if (copy_from_user(input, p, count)) {
-		kfree(input);
+	if (copy_from_user(input, p, count))
 		return -EFAULT;
-	}
 	input[count-1] = '\0';
 
 	if (strnstr(input, "dsi_hs_mode", strlen("dsi_hs_mode")))
@@ -795,7 +787,6 @@ static ssize_t mdss_dsi_cmd_read(struct file *file, char __user *buf,
 	char *bp;
 	ssize_t ret = 0;
 
-	mutex_lock(&pcmds->dbg_mutex);
 	if (*ppos == 0) {
 		kfree(pcmds->string_buf);
 		pcmds->string_buf = NULL;
@@ -814,7 +805,6 @@ static ssize_t mdss_dsi_cmd_read(struct file *file, char __user *buf,
 		buffer = kmalloc(bsize, GFP_KERNEL);
 		if (!buffer) {
 			pr_err("%s: Failed to allocate memory\n", __func__);
-			mutex_unlock(&pcmds->dbg_mutex);
 			return -ENOMEM;
 		}
 
@@ -850,12 +840,10 @@ static ssize_t mdss_dsi_cmd_read(struct file *file, char __user *buf,
 		kfree(pcmds->string_buf);
 		pcmds->string_buf = NULL;
 		pcmds->sblen = 0;
-		mutex_unlock(&pcmds->dbg_mutex);
 		return 0; /* the end */
 	}
 	ret = simple_read_from_buffer(buf, count, ppos, pcmds->string_buf,
 				      pcmds->sblen);
-	mutex_unlock(&pcmds->dbg_mutex);
 	return ret;
 }
 
@@ -867,7 +855,6 @@ static ssize_t mdss_dsi_cmd_write(struct file *file, const char __user *p,
 	int blen = 0;
 	char *string_buf;
 
-	mutex_lock(&pcmds->dbg_mutex);
 	if (*ppos == 0) {
 		kfree(pcmds->string_buf);
 		pcmds->string_buf = NULL;
@@ -879,22 +866,15 @@ static ssize_t mdss_dsi_cmd_write(struct file *file, const char __user *p,
 	string_buf = krealloc(pcmds->string_buf, blen + 1, GFP_KERNEL);
 	if (!string_buf) {
 		pr_err("%s: Failed to allocate memory\n", __func__);
-		mutex_unlock(&pcmds->dbg_mutex);
 		return -ENOMEM;
 	}
 
 	/* Writing in batches is possible */
 	ret = simple_write_to_buffer(string_buf, blen, ppos, p, count);
-	if (ret < 0) {
-		pr_err("%s: Failed to copy data\n", __func__);
-		mutex_unlock(&pcmds->dbg_mutex);
-		return -EINVAL;
-	}
 
-	string_buf[ret] = '\0';
+	string_buf[blen] = '\0';
 	pcmds->string_buf = string_buf;
-	pcmds->sblen = count;
-	mutex_unlock(&pcmds->dbg_mutex);
+	pcmds->sblen = blen;
 	return ret;
 }
 
@@ -905,12 +885,8 @@ static int mdss_dsi_cmd_flush(struct file *file, fl_owner_t id)
 	char *buf, *bufp, *bp;
 	struct dsi_ctrl_hdr *dchdr;
 
-	mutex_lock(&pcmds->dbg_mutex);
-
-	if (!pcmds->string_buf) {
-		mutex_unlock(&pcmds->dbg_mutex);
+	if (!pcmds->string_buf)
 		return 0;
-	}
 
 	/*
 	 * Allocate memory for command buffer
@@ -923,7 +899,6 @@ static int mdss_dsi_cmd_flush(struct file *file, fl_owner_t id)
 		kfree(pcmds->string_buf);
 		pcmds->string_buf = NULL;
 		pcmds->sblen = 0;
-		mutex_unlock(&pcmds->dbg_mutex);
 		return -ENOMEM;
 	}
 
@@ -944,11 +919,10 @@ static int mdss_dsi_cmd_flush(struct file *file, fl_owner_t id)
 	while (len >= sizeof(*dchdr)) {
 		dchdr = (struct dsi_ctrl_hdr *)bp;
 		dchdr->dlen = ntohs(dchdr->dlen);
-		if (dchdr->dlen > len || dchdr->dlen < 0) {
+		if (dchdr->dlen > len) {
 			pr_err("%s: dtsi cmd=%x error, len=%d\n",
 				__func__, dchdr->dtype, dchdr->dlen);
 			kfree(buf);
-			mutex_unlock(&pcmds->dbg_mutex);
 			return -EINVAL;
 		}
 		bp += sizeof(*dchdr);
@@ -960,7 +934,6 @@ static int mdss_dsi_cmd_flush(struct file *file, fl_owner_t id)
 		pr_err("%s: dcs_cmd=%x len=%d error!\n", __func__,
 				bp[0], len);
 		kfree(buf);
-		mutex_unlock(&pcmds->dbg_mutex);
 		return -EINVAL;
 	}
 
@@ -973,7 +946,6 @@ static int mdss_dsi_cmd_flush(struct file *file, fl_owner_t id)
 		pcmds->buf = buf;
 		pcmds->blen = blen;
 	}
-	mutex_unlock(&pcmds->dbg_mutex);
 	return 0;
 }
 
@@ -988,7 +960,6 @@ struct dentry *dsi_debugfs_create_dcs_cmd(const char *name, umode_t mode,
 				struct dentry *parent, struct buf_data *cmd,
 				struct dsi_panel_cmds ctrl_cmds)
 {
-	mutex_init(&cmd->dbg_mutex);
 	cmd->buf = ctrl_cmds.buf;
 	cmd->blen = ctrl_cmds.blen;
 	cmd->string_buf = NULL;
@@ -1056,9 +1027,6 @@ static int mdss_dsi_debugfs_init(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 	struct mdss_panel_data *pdata = &ctrl_pdata->panel_data;
 	int rc;
 
-	if (!pdata)
-		return -EINVAL;
-
 	do {
 		struct mdss_panel_info panel_info = pdata->panel_info;
 		if (panel_info.debugfs_info) {
@@ -1087,7 +1055,6 @@ static void mdss_dsi_debugfs_cleanup(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 		struct mdss_dsi_debugfs_info *dfs = ctrl->debugfs_info;
 		if (dfs && dfs->root)
 			debugfs_remove_recursive(dfs->root);
-		kfree(dfs);
 		pdata = pdata->next;
 	} while (pdata);
 	pr_debug("%s: Cleaned up mdss_dsi_debugfs_info\n", __func__);
@@ -1201,9 +1168,10 @@ static int mdss_dsi_off(struct mdss_panel_data *pdata, int power_state)
 	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
 				panel_data);
 
+	mutex_lock(&ctrl_pdata->mutex);
 	panel_info = &ctrl_pdata->panel_data.panel_info;
 
-	pr_debug("%s+: ctrl=%pK ndx=%d power_state=%d\n",
+	pr_debug("%s+: ctrl=%p ndx=%d power_state=%d\n",
 		__func__, ctrl_pdata, ctrl_pdata->ndx, power_state);
 
 	if (power_state == panel_info->panel_power_state) {
@@ -1263,6 +1231,7 @@ panel_power_ctrl:
 /* [FEATURE]-Mod-END by TCTNB.CY, 2015/12/18*/
 
 end:
+	mutex_unlock(&ctrl_pdata->mutex);
 	pr_debug("%s-:\n", __func__);
 
 	return ret;
@@ -1380,7 +1349,7 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 		mdss_dsi_validate_debugfs_info(ctrl_pdata);
 
 	cur_power_state = pdata->panel_info.panel_power_state;
-	pr_debug("%s+: ctrl=%pK ndx=%d cur_power_state=%d\n", __func__,
+	pr_debug("%s+: ctrl=%p ndx=%d cur_power_state=%d\n", __func__,
 		ctrl_pdata, ctrl_pdata->ndx, cur_power_state);
 
 	pinfo = &pdata->panel_info;
@@ -1404,14 +1373,14 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 		goto end;
 	}
 
-	if (mdss_panel_is_power_on(cur_power_state)) {
-		pr_debug("%s: dsi_on from panel low power state\n", __func__);
-		goto end;
-	}
-
 	ret = mdss_dsi_set_clk_src(ctrl_pdata);
 	if (ret) {
 		pr_err("%s: failed to set clk src. rc=%d\n", __func__, ret);
+		goto end;
+	}
+
+	if (mdss_panel_is_power_on(cur_power_state)) {
+		pr_debug("%s: dsi_on from panel low power state\n", __func__);
 		goto end;
 	}
 
@@ -1576,7 +1545,7 @@ static int mdss_dsi_unblank(struct mdss_panel_data *pdata)
 				panel_data);
 	mipi  = &pdata->panel_info.mipi;
 
-	pr_debug("%s+: ctrl=%pK ndx=%d cur_power_state=%d\n", __func__,
+	pr_debug("%s+: ctrl=%p ndx=%d cur_power_state=%d\n", __func__,
 		ctrl_pdata, ctrl_pdata->ndx,
 		pdata->panel_info.panel_power_state);
 
@@ -1600,6 +1569,7 @@ static int mdss_dsi_unblank(struct mdss_panel_data *pdata)
 				goto error;
 			}
 		}
+		ctrl_pdata->ctrl_state |= CTRL_STATE_PANEL_INIT;
 	}
 
 	if ((pdata->panel_info.type == MIPI_CMD_PANEL) &&
@@ -1619,7 +1589,6 @@ static int mdss_dsi_unblank(struct mdss_panel_data *pdata)
 #endif
 /* [FEATURE]-Mod-END by TCTNB.CY, 2016/01/08*/
 
-	ctrl_pdata->ctrl_state |= CTRL_STATE_PANEL_INIT;
 /* [FEATURE]-Add-BEGIN by TCTNB.CY, task-1395489, 2016/01/11, enable error flag detect*/
 #ifdef CONFIG_ERR_FLAG_DETECT
 	if (gpio_is_valid(ctrl_pdata->err_flag_gpio) && mdss_dsi_is_left_ctrl(ctrl_pdata)) {
@@ -1652,7 +1621,7 @@ static int mdss_dsi_blank(struct mdss_panel_data *pdata, int power_state)
 				panel_data);
 	mipi = &pdata->panel_info.mipi;
 
-	pr_debug("%s+: ctrl=%pK ndx=%d power_state=%d\n",
+	pr_debug("%s+: ctrl=%p ndx=%d power_state=%d\n",
 		__func__, ctrl_pdata, ctrl_pdata->ndx, power_state);
 
 	mdss_dsi_clk_ctrl(ctrl_pdata, DSI_ALL_CLKS, 1);
@@ -1731,7 +1700,7 @@ static int mdss_dsi_post_panel_on(struct mdss_panel_data *pdata)
 	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
 				panel_data);
 
-	pr_debug("%s+: ctrl=%pK ndx=%d\n", __func__,
+	pr_debug("%s+: ctrl=%p ndx=%d\n", __func__,
 				ctrl_pdata, ctrl_pdata->ndx);
 
 	mdss_dsi_clk_ctrl(ctrl_pdata, DSI_ALL_CLKS, 1);
@@ -1763,7 +1732,7 @@ int mdss_dsi_cont_splash_on(struct mdss_panel_data *pdata)
 	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
 				panel_data);
 
-	pr_debug("%s+: ctrl=%pK ndx=%d\n", __func__,
+	pr_debug("%s+: ctrl=%p ndx=%d\n", __func__,
 				ctrl_pdata, ctrl_pdata->ndx);
 
 	WARN((ctrl_pdata->ctrl_state & CTRL_STATE_PANEL_INIT),
@@ -2212,15 +2181,6 @@ int mdss_dsi_register_recovery_handler(struct mdss_dsi_ctrl_pdata *ctrl,
 	return 0;
 }
 
-int mdss_dsi_register_mdp_callback(struct mdss_dsi_ctrl_pdata *ctrl,
-	struct mdss_intf_recovery *mdp_callback)
-{
-	mutex_lock(&ctrl->mutex);
-	ctrl->mdp_callback = mdp_callback;
-	mutex_unlock(&ctrl->mutex);
-	return 0;
-}
-
 static int mdss_dsi_clk_refresh(struct mdss_panel_data *pdata)
 {
 	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
@@ -2457,10 +2417,6 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 		break;
 	case MDSS_EVENT_REGISTER_RECOVERY_HANDLER:
 		rc = mdss_dsi_register_recovery_handler(ctrl_pdata,
-			(struct mdss_intf_recovery *)arg);
-		break;
-	case MDSS_EVENT_REGISTER_MDP_CALLBACK:
-		rc = mdss_dsi_register_mdp_callback(ctrl_pdata,
 			(struct mdss_intf_recovery *)arg);
 		break;
 	case MDSS_EVENT_DSI_DYNAMIC_SWITCH:
@@ -2958,7 +2914,7 @@ static int mdss_dsi_res_init(struct platform_device *pdev)
 		mdss_dsi_res->shared_data = devm_kzalloc(&pdev->dev,
 				sizeof(struct dsi_shared_data),
 				GFP_KERNEL);
-		pr_debug("%s Allocated shared_data=%pK\n", __func__,
+		pr_debug("%s Allocated shared_data=%p\n", __func__,
 				mdss_dsi_res->shared_data);
 		if (!mdss_dsi_res->shared_data) {
 			pr_err("%s Unable to alloc mem for shared_data\n",
@@ -3017,7 +2973,7 @@ static int mdss_dsi_res_init(struct platform_device *pdev)
 				rc = -ENOMEM;
 				goto mem_fail;
 			}
-			pr_debug("%s Allocated ctrl_pdata[%d]=%pK\n",
+			pr_debug("%s Allocated ctrl_pdata[%d]=%p\n",
 				__func__, i, mdss_dsi_res->ctrl_pdata[i]);
 			mdss_dsi_res->ctrl_pdata[i]->shared_data =
 				mdss_dsi_res->shared_data;
@@ -3027,7 +2983,7 @@ static int mdss_dsi_res_init(struct platform_device *pdev)
 	}
 
 	mdss_dsi_res->pdev = pdev;
-	pr_debug("%s: Setting up mdss_dsi_res=%pK\n", __func__, mdss_dsi_res);
+	pr_debug("%s: Setting up mdss_dsi_res=%p\n", __func__, mdss_dsi_res);
 
 	return 0;
 
@@ -3788,10 +3744,10 @@ int mdss_dsi_retrieve_ctrl_resources(struct platform_device *pdev, int mode,
 		return rc;
 	}
 
-	pr_info("%s: ctrl_base=%pK ctrl_size=%x phy_base=%pK phy_size=%x\n",
+	pr_info("%s: ctrl_base=%p ctrl_size=%x phy_base=%p phy_size=%x\n",
 		__func__, ctrl->ctrl_base, ctrl->reg_size, ctrl->phy_io.base,
 		ctrl->phy_io.len);
-	pr_info("%s: phy_regulator_base=%pK phy_regulator_size=%x\n", __func__,
+	pr_info("%s: phy_regulator_base=%p phy_regulator_size=%x\n", __func__,
 		ctrl->phy_regulator_io.base, ctrl->phy_regulator_io.len);
 
 	rc = msm_dss_ioremap_byname(pdev, &ctrl->mmss_misc_io,

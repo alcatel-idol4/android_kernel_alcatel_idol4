@@ -1,7 +1,7 @@
 /*
  * MDSS MDP Interface (used by framebuffer core)
  *
- * Copyright (c) 2007-2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2007-2015, The Linux Foundation. All rights reserved.
  * Copyright (C) 2007 Google Incorporated
  *
  * This software is licensed under the terms of the GNU General Public
@@ -1014,14 +1014,8 @@ static int mdss_mdp_gdsc_notifier_call(struct notifier_block *self,
 
 	mdata = container_of(self, struct mdss_data_type, gdsc_cb);
 
-	if (event & REGULATOR_EVENT_ENABLE) {
-		/*
-		 * As SMMU in low tier targets is not power collapsible,
-		 * hence we don't need to restore sec configuration.
-		 */
-		if (!mdss_mdp_req_init_restore_cfg(mdata))
-			__mdss_restore_sec_cfg(mdata);
-	}
+	if (event & REGULATOR_EVENT_ENABLE)
+		__mdss_restore_sec_cfg(mdata);
 
 	return NOTIFY_OK;
 }
@@ -1040,8 +1034,7 @@ static int mdss_iommu_tlb_timeout_notify(struct notifier_block *self,
 	switch (action) {
 	case TLB_SYNC_TIMEOUT:
 		pr_err("cb for TLB SYNC timeout. Dumping XLOG's\n");
-		MDSS_XLOG_TOUT_HANDLER_FATAL_DUMP("vbif", "mdp",
-					"mdp_dbg_bus", "atomic_context");
+		MDSS_XLOG_TOUT_HANDLER_FATAL_DUMP("vbif", "mdp", "mdp_dbg_bus");
 		break;
 	}
 
@@ -1449,7 +1442,7 @@ static u32 mdss_mdp_res_init(struct mdss_data_type *mdata)
 
 	mdata->iclient = msm_ion_client_create(mdata->pdev->name);
 	if (IS_ERR_OR_NULL(mdata->iclient)) {
-		pr_err("msm_ion_client_create() return error (%pK)\n",
+		pr_err("msm_ion_client_create() return error (%p)\n",
 				mdata->iclient);
 		mdata->iclient = NULL;
 	}
@@ -1680,7 +1673,7 @@ static ssize_t mdss_mdp_store_max_limit_bw(struct device *dev,
 	struct mdss_data_type *mdata = dev_get_drvdata(dev);
 	u32 data = 0;
 
-	if (kstrtouint(buf, 0, &data)) {
+	if (1 != sscanf(buf, "%d", &data)) {
 		pr_info("Not able scan to bw_mode_bitmap\n");
 	} else {
 		mdata->bw_mode_bitmap = data;
@@ -1818,7 +1811,7 @@ static int mdss_mdp_probe(struct platform_device *pdev)
 	if (rc)
 		pr_debug("unable to map MDSS VBIF non-realtime base\n");
 	else
-		pr_debug("MDSS VBIF NRT HW Base addr=%pK len=0x%x\n",
+		pr_debug("MDSS VBIF NRT HW Base addr=%p len=0x%x\n",
 			mdata->vbif_nrt_io.base, mdata->vbif_nrt_io.len);
 
 	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
@@ -2671,7 +2664,7 @@ static int mdss_mdp_dsc_addr_setup(struct mdss_data_type *mdata,
 	for (i = 0; i < len; i++) {
 		head[i].num = i;
 		head[i].base = (mdata->mdss_io.base) + dsc_offsets[i];
-		pr_debug("%s: dsc off (%d) = %pK\n", __func__, i, head[i].base);
+		pr_debug("%s: dsc off (%d) = %p\n", __func__, i, head[i].base);
 	}
 
 	mdata->dsc_off = head;
@@ -3607,9 +3600,9 @@ static void apply_dynamic_ot_limit(u32 *ot_lim,
 
 	res = params->width * params->height;
 
-	pr_debug("w:%d h:%d rot:%d yuv:%d wb:%d res:%d fps:%d\n",
+	pr_debug("w:%d h:%d rot:%d yuv:%d wb:%d res:%d\n",
 		params->width, params->height, params->is_rot,
-		params->is_yuv, params->is_wb, res, params->frame_rate);
+		params->is_yuv, params->is_wb, res);
 
 	switch (mdata->mdp_rev) {
 	case MDSS_MDP_HW_REV_111:
@@ -3857,7 +3850,7 @@ int mdss_mdp_secure_display_ctrl(unsigned int enable)
 			&request, sizeof(request), &resp, sizeof(resp));
 	} else {
 		ret = scm_call2(SCM_SIP_FNID(SCM_SVC_MP,
-				MEM_PROTECT_SD_CTRL), &desc);
+				MEM_PROTECT_SD_CTRL_FLAT), &desc);
 		resp = desc.ret[0];
 	}
 
