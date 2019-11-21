@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -43,6 +43,7 @@ struct voice_svc_prvt {
 	struct list_head response_queue;
 	wait_queue_head_t response_wait;
 	spinlock_t response_lock;
+	struct mutex response_mutex_lock;
 };
 
 struct apr_data {
@@ -236,8 +237,8 @@ static int voice_svc_send_req(struct voice_svc_cmd_request *apr_request,
 	} else if (!strcmp(apr_request->svc_name, VOICE_SVC_MVM_STR)) {
 		apr_handle = prtd->apr_q6_mvm;
 	} else {
-		pr_err("%s: Invalid service %s\n", __func__,
-			apr_request->svc_name);
+		pr_err("%s: Invalid service %.*s\n", __func__,
+			MAX_APR_SERVICE_NAME_LEN, apr_request->svc_name);
 
 		ret = -EINVAL;
 		goto done;
@@ -264,7 +265,7 @@ static int voice_svc_reg(char *svc, uint32_t src_port,
 {
 	int ret = 0;
 
-	pr_debug("%s\n", __func__);
+	pr_info("%s\n", __func__); 
 
 	if (handle == NULL) {
 		pr_err("%s: handle is NULL\n", __func__);
@@ -297,7 +298,7 @@ static int voice_svc_reg(char *svc, uint32_t src_port,
 		ret = -EFAULT;
 		goto done;
 	}
-	pr_debug("%s: Register %s successful\n",
+	pr_info("%s: Register %s successful\n", 
 		__func__, svc);
 done:
 	return ret;
@@ -307,7 +308,7 @@ static int voice_svc_dereg(char *svc, void **handle)
 {
 	int ret = 0;
 
-	pr_debug("%s\n", __func__);
+	pr_info("%s\n", __func__); 
 
 	if (handle == NULL) {
 		pr_err("%s: handle is NULL\n", __func__);
@@ -329,7 +330,7 @@ static int voice_svc_dereg(char *svc, void **handle)
 		goto done;
 	}
 	*handle = NULL;
-	pr_debug("%s: deregister %s successful\n", __func__, svc);
+	pr_info("%s: deregister %s successful\n", __func__, svc); 
 
 done:
 	return ret;
@@ -351,8 +352,8 @@ static int process_reg_cmd(struct voice_svc_register *apr_reg_svc,
 		svc = VOICE_SVC_CVS_STR;
 		handle = &prtd->apr_q6_cvs;
 	} else {
-		pr_err("%s: Invalid Service: %s\n", __func__,
-		       apr_reg_svc->svc_name);
+		pr_err("%s: Invalid Service: %.*s\n", __func__,
+			MAX_APR_SERVICE_NAME_LEN, apr_reg_svc->svc_name);
 		ret = -EINVAL;
 		goto done;
 	}
@@ -378,7 +379,13 @@ static ssize_t voice_svc_write(struct file *file, const char __user *buf,
 
 	pr_debug("%s\n", __func__);
 
-	data = kmalloc(count, GFP_KERNEL);
+	if (count >= sizeof(struct voice_svc_write_msg)) {
+		data = kmalloc(count, GFP_KERNEL);
+	} else {
+		pr_debug("%s: invalid data size\n", __func__);
+		ret = -EINVAL;
+		goto done;
+	}
 
 	if (data == NULL) {
 		pr_err("%s: data kmalloc failed.\n", __func__);
@@ -396,7 +403,7 @@ static ssize_t voice_svc_write(struct file *file, const char __user *buf,
 	}
 
 	cmd = data->msg_type;
-	prtd = (struct voice_svc_prvt *)file->private_data;
+	prtd = (struct voice_svc_prvt *) file->private_data;
 	if (prtd == NULL) {
 		pr_err("%s: prtd is NULL\n", __func__);
 
@@ -406,9 +413,8 @@ static ssize_t voice_svc_write(struct file *file, const char __user *buf,
 
 	switch (cmd) {
 	case MSG_REGISTER:
-		if (count  >=
-				(sizeof(struct voice_svc_register) +
-				sizeof(*data))) {
+		if (count == (sizeof(struct voice_svc_write_msg) +
+			      sizeof(struct voice_svc_register))) {
 			ret = process_reg_cmd(
 			(struct voice_svc_register *)data->payload, prtd);
 			if (!ret)
@@ -420,8 +426,8 @@ static ssize_t voice_svc_write(struct file *file, const char __user *buf,
 		}
 		break;
 	case MSG_REQUEST:
-	if (count >= (sizeof(struct voice_svc_cmd_request) +
-					sizeof(*data))) {
+		if (count >= (sizeof(struct voice_svc_write_msg) +
+			      sizeof(struct voice_svc_cmd_request))) {
 		ret = voice_svc_send_req(
 			(struct voice_svc_cmd_request *)data->payload, prtd);
 		if (!ret)
@@ -461,6 +467,7 @@ static ssize_t voice_svc_read(struct file *file, char __user *arg,
 		goto done;
 	}
 
+	mutex_lock(&prtd->response_mutex_lock);
 	spin_lock_irqsave(&prtd->response_lock, spin_flags);
 
 	if (list_empty(&prtd->response_queue)) {
@@ -474,7 +481,7 @@ static ssize_t voice_svc_read(struct file *file, char __user *arg,
 			pr_debug("%s: Read timeout\n", __func__);
 
 			ret = -ETIMEDOUT;
-			goto done;
+			goto unlock;
 		} else if (ret > 0 && !list_empty(&prtd->response_queue)) {
 			pr_debug("%s: Interrupt recieved for response\n",
 				 __func__);
@@ -482,7 +489,7 @@ static ssize_t voice_svc_read(struct file *file, char __user *arg,
 			pr_debug("%s: Interrupted by SIGNAL %d\n",
 				 __func__, ret);
 
-			goto done;
+			goto unlock;
 		}
 
 		spin_lock_irqsave(&prtd->response_lock, spin_flags);
@@ -501,7 +508,7 @@ static ssize_t voice_svc_read(struct file *file, char __user *arg,
 		       __func__, count, size);
 
 		ret = -ENOMEM;
-		goto done;
+		goto unlock;
 	}
 
 	if (!access_ok(VERIFY_WRITE, arg, size)) {
@@ -509,7 +516,7 @@ static ssize_t voice_svc_read(struct file *file, char __user *arg,
 		       __func__);
 
 		ret = -EPERM;
-		goto done;
+		goto unlock;
 	}
 
 	ret = copy_to_user(arg, &resp->resp,
@@ -519,7 +526,7 @@ static ssize_t voice_svc_read(struct file *file, char __user *arg,
 		pr_err("%s: copy_to_user failed %d\n", __func__, ret);
 
 		ret = -EPERM;
-		goto done;
+		goto unlock;
 	}
 
 	spin_lock_irqsave(&prtd->response_lock, spin_flags);
@@ -533,6 +540,8 @@ static ssize_t voice_svc_read(struct file *file, char __user *arg,
 
 	ret = count;
 
+unlock:
+	mutex_unlock(&prtd->response_mutex_lock);
 done:
 	return ret;
 }
@@ -587,7 +596,7 @@ static int voice_svc_open(struct inode *inode, struct file *file)
 {
 	struct voice_svc_prvt *prtd = NULL;
 
-	pr_debug("%s\n", __func__);
+	pr_info("%s\n", __func__); 
 
 	prtd = kmalloc(sizeof(struct voice_svc_prvt), GFP_KERNEL);
 
@@ -603,6 +612,7 @@ static int voice_svc_open(struct inode *inode, struct file *file)
 	INIT_LIST_HEAD(&prtd->response_queue);
 	init_waitqueue_head(&prtd->response_wait);
 	spin_lock_init(&prtd->response_lock);
+	mutex_init(&prtd->response_mutex_lock);
 	file->private_data = (void *)prtd;
 
 	is_released = 0;
@@ -628,7 +638,7 @@ static int voice_svc_release(struct inode *inode, struct file *file)
 	char *svc_name = NULL;
 	void **handle = NULL;
 
-	pr_debug("%s\n", __func__);
+	pr_info("%s ++\n", __func__); 
 
 	prtd = (struct voice_svc_prvt *)file->private_data;
 	if (prtd == NULL) {
@@ -644,7 +654,8 @@ static int voice_svc_release(struct inode *inode, struct file *file)
 		reg_dummy_sess = 0;
 	}
 	if (prtd->apr_q6_cvs != NULL) {
-		svc_name = VOICE_SVC_MVM_STR;
+		pr_info("%s: voice_svc_dereg VOICE_SVC_CVS_STR\n", __func__); 
+		svc_name = VOICE_SVC_CVS_STR; 
 		handle = &prtd->apr_q6_cvs;
 		ret = voice_svc_dereg(svc_name, handle);
 		if (ret)
@@ -652,6 +663,7 @@ static int voice_svc_release(struct inode *inode, struct file *file)
 	}
 
 	if (prtd->apr_q6_mvm != NULL) {
+		pr_info("%s: voice_svc_dereg VOICE_SVC_MVM_STR\n", __func__); 
 		svc_name = VOICE_SVC_MVM_STR;
 		handle = &prtd->apr_q6_mvm;
 		ret = voice_svc_dereg(svc_name, handle);
@@ -662,7 +674,7 @@ static int voice_svc_release(struct inode *inode, struct file *file)
 	spin_lock_irqsave(&prtd->response_lock, spin_flags);
 
 	while (!list_empty(&prtd->response_queue)) {
-		pr_debug("%s: Remove item from response queue\n", __func__);
+		pr_info("%s: Remove item from response queue\n", __func__); 
 
 		resp = list_first_entry(&prtd->response_queue,
 					struct apr_response_list, list);
@@ -672,6 +684,9 @@ static int voice_svc_release(struct inode *inode, struct file *file)
 	}
 
 	spin_unlock_irqrestore(&prtd->response_lock, spin_flags);
+	mutex_unlock(&prtd->response_mutex_lock);
+
+	mutex_destroy(&prtd->response_mutex_lock);
 
 	spin_lock(&voicesvc_lock);
 	kfree(file->private_data);
@@ -679,6 +694,7 @@ static int voice_svc_release(struct inode *inode, struct file *file)
 	is_released = 1;
 	spin_unlock(&voicesvc_lock);
 
+	pr_info("%s --\n", __func__); 
 done:
 	return ret;
 }
