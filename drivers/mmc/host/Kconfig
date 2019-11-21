@@ -104,31 +104,6 @@ config MMC_SDHCI_PLTFM
 
 	  If unsure, say N.
 
-config MMC_SDHCI_MSM
-	tristate "Qualcomm SDHCI Controller Support"
-	depends on ARCH_MSM
-	depends on MMC_SDHCI_PLTFM
-	help
-	  This selects the Secure Digital Host Controller Interface (SDHCI)
-	  support present in MSM SOCs from Qualcomm. The controller
-	  supports SD/MMC/SDIO devices.
-
-	  If you have a controller with this interface, say Y or M here.
-
-	  If unsure, say N.
-
-config MMC_SDHCI_MSM_ICE
-	bool "Qualcomm Technologies, Inc Inline Crypto Engine for SDHCI core"
-	depends on MMC_SDHCI_MSM && CRYPTO_DEV_QCOM_ICE
-	default MMC_SDHCI_MSM && CRYPTO_DEV_QCOM_ICE
-	help
-	  This selects the QTI specific additions to support Inline Crypto
-	  Engine (ICE). ICE accelerates the crypto operations and maintains
-	  the high SDHCI performance.
-
-	  Select this if you have ICE supported for SDHCI on QTI chipset.
-	  If unsure, say N.
-
 config MMC_SDHCI_OF_ESDHC
 	tristate "SDHCI OF support for the Freescale eSDHC controller"
 	depends on MMC_SDHCI_PLTFM
@@ -336,6 +311,14 @@ config MMC_ATMELMCI
 
 	  If unsure, say N.
 
+config MMC_MSM
+	tristate "Qualcomm SDCC Controller Support"
+	depends on MMC && ARCH_MSM
+	help
+	  This provides support for the SD/MMC cell found in the
+	  MSM and QSD SOCs from Qualcomm. The controller also has
+	  support for SDIO devices.
+
 config MMC_MXC
 	tristate "Freescale i.MX21/27/31 or MPC512x Multimedia Card support"
 	depends on ARCH_MXC || PPC_MPC512x
@@ -493,7 +476,7 @@ config MMC_SDHI
 
 config MMC_CB710
 	tristate "ENE CB710 MMC/SD Interface support"
-	depends on PCI
+	depends on PCI && GENERIC_HARDIRQS
 	select CB710_CORE
 	help
 	  This option enables support for MMC/SD part of ENE CB710/720 Flash
@@ -663,16 +646,3 @@ config MMC_REALTEK_PCI
 	help
 	  Say Y here to include driver code to support SD/MMC card interface
 	  of Realtek PCI-E card reader
-
-config MMC_CQ_HCI
-	tristate "Command Queue Support"
-	depends on HAS_DMA
-	help
-	  This selects the Command Queue Host Controller Interface (CQHCI)
-	  support present in host controllers of Qualcomm Technologies, Inc
-	  amongst others.
-	  This controller supports eMMC devices with command queue support.
-
-	  If you have a controller with this interface, say Y or M here.
-
-	  If unsure, say N.
