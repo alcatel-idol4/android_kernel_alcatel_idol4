@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -1415,7 +1415,7 @@ int create_pkt_cmd_session_set_property(
 			break;
 		default:
 			dprintk(VIDC_ERR,
-					"Invalid Rate control setting: 0x%p\n",
+					"Invalid Rate control setting: 0x%pK\n",
 					pdata);
 			break;
 		}
@@ -2056,6 +2056,14 @@ int create_pkt_cmd_session_set_property(
 		pkt->rg_property_data[0] =
 			HFI_PROPERTY_PARAM_VENC_VIDEO_SIGNAL_INFO;
 		pkt->size += sizeof(u32) + sizeof(*signal_info);
+                break;
+        }
+	case HAL_PARAM_VENC_CONSTRAINED_INTRA_PRED:
+	{
+		create_pkt_enable(pkt->rg_property_data,
+			HFI_PROPERTY_PARAM_VENC_CONSTRAINED_INTRA_PRED,
+			((struct hal_enable *)pdata)->enable);
+		pkt->size += sizeof(u32) + sizeof(struct hfi_enable);
 		break;
 	}
 	case HAL_PARAM_VENC_IFRAMESIZE_TYPE:
@@ -2143,7 +2151,7 @@ int create_pkt_ssr_cmd(enum hal_ssr_trigger_type type,
 		struct hfi_cmd_sys_test_ssr_packet *pkt)
 {
 	if (!pkt) {
-		dprintk(VIDC_ERR, "Invalid params, device: %p\n", pkt);
+		dprintk(VIDC_ERR, "Invalid params, device: %pK\n", pkt);
 		return -EINVAL;
 	}
 	pkt->size = sizeof(struct hfi_cmd_sys_test_ssr_packet);
@@ -2156,7 +2164,7 @@ int create_pkt_cmd_sys_image_version(
 		struct hfi_cmd_sys_get_property_packet *pkt)
 {
 	if (!pkt) {
-		dprintk(VIDC_ERR, "%s invalid param :%p\n", __func__, pkt);
+		dprintk(VIDC_ERR, "%s invalid param :%pK\n", __func__, pkt);
 		return -EINVAL;
 	}
 	pkt->size = sizeof(struct hfi_cmd_sys_get_property_packet);
@@ -2214,21 +2222,26 @@ static int create_3x_pkt_cmd_session_set_property(
 		pkt->rg_property_data[0] =
 			HFI_PROPERTY_PARAM_VENC_INTRA_REFRESH;
 		hfi = (struct hfi_3x_intra_refresh *) &pkt->rg_property_data[1];
+		hfi->mbs = 0;
 		switch (prop->mode) {
 		case HAL_INTRA_REFRESH_NONE:
 			hfi->mode = HFI_INTRA_REFRESH_NONE;
 			break;
 		case HAL_INTRA_REFRESH_ADAPTIVE:
 			hfi->mode = HFI_INTRA_REFRESH_ADAPTIVE;
+			hfi->mbs = prop->air_mbs;
 			break;
 		case HAL_INTRA_REFRESH_CYCLIC:
 			hfi->mode = HFI_INTRA_REFRESH_CYCLIC;
+			hfi->mbs = prop->cir_mbs;
 			break;
 		case HAL_INTRA_REFRESH_CYCLIC_ADAPTIVE:
 			hfi->mode = HFI_INTRA_REFRESH_CYCLIC_ADAPTIVE;
+			hfi->mbs = prop->air_mbs;
 			break;
 		case HAL_INTRA_REFRESH_RANDOM:
 			hfi->mode = HFI_INTRA_REFRESH_RANDOM;
+			hfi->mbs = prop->air_mbs;
 			break;
 		default:
 			dprintk(VIDC_ERR,
@@ -2236,7 +2249,6 @@ static int create_3x_pkt_cmd_session_set_property(
 				prop->mode);
 			break;
 		}
-		hfi->mbs = prop->cir_mbs;
 		pkt->size += sizeof(u32) + sizeof(struct hfi_3x_intra_refresh);
 		break;
 	}
